@@ -1,2 +1,3 @@
-# Asiaminers————亚洲矿工社群技术交流脚本合集
+# Asiaminers————脚本合集
 $ asiaminers.sh---VPS流量中转配置脚本
+$ shadowsocksR.sh---VPS部署ssr<Debian环境>
