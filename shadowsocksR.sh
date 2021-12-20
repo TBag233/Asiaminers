@@ -4,9 +4,8 @@ export PATH
 #=================================================================#
 #   System Required:  CentOS 6,7, Debian, Ubuntu                  #
 #   Description: One click Install ShadowsocksR Server            #
-#   Author: TBAG <asiaminers.com>                             #
-#   Thanks: @breakwa11
-#
+#   Author: TBAG <asiaminers.com>                                 #
+#   Thanks: @breakwa11                                            #
 #   Intro:  https://shadowsocks.be/9.html                         #
 #=================================================================#
 
