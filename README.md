@@ -1,4 +1,4 @@
-# Asiaminers————脚本合集
+# Asiaminers———合集
 asiaminers-socat.sh---VPS流量中转零抽配置脚本 
 
 csjb.sh501---部署矿池抽水脚本（测试版）
