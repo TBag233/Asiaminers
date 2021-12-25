@@ -7,5 +7,5 @@ cdjb.sh501---部署矿池抽水脚本（稳定版）
 
 shadowsocksR.sh---VPS部署ssr<Debian环境>
 
-shadowsocksR.sh---VPS部署ssr<Centos环境+自启BBA加速模组>
+shadowsocksR2.sh---VPS部署ssr<Centos环境+自启BBA加速模组>
 
