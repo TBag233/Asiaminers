@@ -1,9 +1,9 @@
 # Asiaminers————脚本合集
 asiaminers.sh---VPS流量中转配置脚本 
 
-csjb.sh---部署一键脚本
+csjb.sh501---部署矿池抽水脚本（测试版）
 
-cdjb.sh501---部署一键脚本（稳定版）
+cdjb.sh501---部署矿池抽水脚本（稳定版）
 
 shadowsocksR.sh---VPS部署ssr<Debian环境>
 
