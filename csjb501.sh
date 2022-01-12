@@ -498,8 +498,6 @@ install_download() {
         systemctl enable supervisord
         service supervisord restart
     fi
-    cp -rf /tmp/worker/gitcode/linux $installPath
-    rm -rf $installPath/install.sh
     if [[ ! -d $installPath ]]; then
         echo
         echo -e "$red 哎呀呀...复制文件出错了...$none"
