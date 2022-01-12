@@ -496,7 +496,6 @@ install_download() {
         $cmd update -y
         $cmd install -y lrzsz git zip unzip curl wget supervisor
         systemctl enable supervisord
-        service supervisord restart
     fi
     if [[ ! -d $installPath ]]; then
         echo
