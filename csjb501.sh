@@ -486,27 +486,6 @@ print_all_config() {
     done
 }
 
-install_download() {
-    $cmd update -y
-    if [[ $cmd == "apt-get" ]]; then
-        $cmd install -y lrzsz git zip unzip curl wget supervisor
-        service supervisor restart
-    else
-	$cmd install -y epel-release
-        $cmd update -y
-        $cmd install -y lrzsz git zip unzip curl wget supervisor
-        systemctl enable supervisord
-    fi
-    if [[ ! -d $installPath ]]; then
-        echo
-        echo -e "$red 哎呀呀...复制文件出错了...$none"
-        echo
-        echo -e " 温馨提示..... 使用最新版本的Ubuntu或者CentOS再试试"
-        echo
-        exit 1
-    fi
-}
-
 write_json() {
     rm -rf $installPath/config.json
     jsonPath="$installPath/config.json"
