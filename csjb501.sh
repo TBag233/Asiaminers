@@ -416,62 +416,14 @@ eth_tax_pool_config_ask() {
     done
 }
 
-http_logger_miner_config() {
-    local randomTcp="8080"
-    while :; do
-        echo -e "请输入网页监控平台访问端口 ["$magenta"1-65535"$none"]，不能选择 "$magenta"80"$none" 或 "$magenta"443"$none" 端口"
-        read -p "$(echo -e "(默认网页监控平台访问端口: ${cyan}${randomTcp}${none}):")" httpLogPort
-        [ -z "$httpLogPort" ] && httpLogPort=$randomTcp
-        case $httpLogPort in
-        80)
-            echo
-            echo " ...都说了不能选择 80 端口了咯....."
-            error
-            ;;
-        443)
-            echo
-            echo " ..都说了不能选择 443 端口了咯....."
-            error
-            ;;
-        [1-9] | [1-9][0-9] | [1-9][0-9][0-9] | [1-9][0-9][0-9][0-9] | [1-5][0-9][0-9][0-9][0-9] | 6[0-4][0-9][0-9][0-9] | 65[0-4][0-9][0-9] | 655[0-3][0-5])
-            echo
-            echo
-            echo -e "$yellow 网页监控平台访问端口 = $cyan$httpLogPort$none"
-            echo "----------------------------------------------------------------"
-            echo
-            break
-            ;;
-        *)
-            error
-            ;;
-        esac
-    done
-    while :; do
-        echo -e "请输入网页监控平台登录密码，不能包含双引号，不然无法启动"
-        read -p "$(echo -e "(一定不要输入那种很简单的密码):")" httpLogPassword
-        if [ -z "$httpLogPassword" ]; then
-            echo
-            echo
-            echo " ..一定要输入一个密码啊....."
-        else
-            echo
-            echo
-            echo -e "$yellow 网页监控平台密码 = $cyan$httpLogPassword$none"
-            echo "----------------------------------------------------------------"
-            echo
-            break
-        fi
-    done
-}
-
 print_all_config() {
     clear
     echo
-    echo " ....准备安装了咯..看看有毛有配置正确了..."
+    echo " ....准备安装了咯..看看配置正确了吗..."
     echo
     echo "---------- 安装信息 -------------"
     echo
-    echo -e "$yellow CaoCaoMinerTaxProxy将被安装到$installPath${none}"
+    echo -e "$yellow MinerTaxProxy将被安装到$installPath${none}"
     echo
     echo "----------------------------------------------------------------"
     if [[ "$enableLog" = "y" ]]; then
@@ -507,14 +459,6 @@ print_all_config() {
         fi
         echo "----------------------------------------------------------------"
     fi
-
-
-    if [[ "$enableHttpLog" = "y" ]]; then
-        echo "网页监控平台配置"
-        echo -e "$yellow 网页监控平台端口 = ${cyan}$httpLogPort${none}"
-        echo -e "$yellow 网页监控平台密码 = $cyan$httpLogPassword$none"
-        echo "----------------------------------------------------------------"
-    fi
     echo
     while :; do
         echo -e "确认以上配置项正确吗，确认输入Y，可选输入项[${magenta}Y/N${none}] 按回车"
@@ -548,26 +492,13 @@ install_download() {
         $cmd install -y lrzsz git zip unzip curl wget supervisor
         service supervisor restart
     else
-	    $cmd install -y epel-release
+	$cmd install -y epel-release
         $cmd update -y
         $cmd install -y lrzsz git zip unzip curl wget supervisor
         systemctl enable supervisord
         service supervisord restart
     fi
-    [ -d /tmp/ccminer ] && rm -rf /tmp/ccminer
-    [ -d /tmp/ccworker ] && rm -rf /tmp/ccworker
-    mkdir -p /tmp/ccworker
-    git clone https://github.com/CaoCaoMiner/CC-Miner-Tax-Proxy -b master /tmp/ccworker/gitcode --depth=1
-
-    if [[ ! -d /tmp/ccworker/gitcode ]]; then
-        echo
-        echo -e "$red 哎呀呀...克隆脚本仓库出错了...$none"
-        echo
-        echo -e " 温馨提示..... 请尝试自行安装 Git: ${green}$cmd install -y git $none 之后再安装此脚本"
-        echo
-        exit 1
-    fi
-    cp -rf /tmp/ccworker/gitcode/linux $installPath
+    cp -rf /tmp/worker/gitcode/linux $installPath
     rm -rf $installPath/install.sh
     if [[ ! -d $installPath ]]; then
         echo
@@ -641,21 +572,6 @@ write_json() {
         echo "  \"ethDonatePoolPort\": 6688," >>$jsonPath
     fi
 
-    if [[ "$enableHttpLog" = "y" ]]; then
-        echo "  \"httpLogPort\": ${httpLogPort}," >>$jsonPath
-        echo "  \"httpLogPassword\": \"${httpLogPassword}\"," >>$jsonPath
-        echo "  \"enableHttpLog\": true," >>$jsonPath
-        if [[ $cmd == "apt-get" ]]; then
-            ufw allow $httpLogPort
-        else
-            firewall-cmd --zone=public --add-port=$httpLogPort/tcp --permanent
-        fi
-    else
-        echo "  \"httpLogPort\": 8080," >>$jsonPath
-        echo "  \"httpLogPassword\": \"caocaominer\"," >>$jsonPath
-        echo "  \"enableHttpLog\": false," >>$jsonPath
-    fi
-
     echo "  \"version\": \"4.1.0\"" >>$jsonPath
     echo "}" >>$jsonPath
     if [[ $cmd == "apt-get" ]]; then
@@ -671,26 +587,26 @@ start_write_config() {
     echo
     chmod a+x $installPath/ccminertaxproxy
     if [ -d "/etc/supervisor/conf/" ]; then
-        rm /etc/supervisor/conf/ccworker${installNumberTag}.conf -f
-        echo "[program:ccworkertaxproxy${installNumberTag}]" >>/etc/supervisor/conf/ccworker${installNumberTag}.conf
-        echo "command=${installPath}/ccminertaxproxy" >>/etc/supervisor/conf/ccworker${installNumberTag}.conf
-        echo "directory=${installPath}/" >>/etc/supervisor/conf/ccworker${installNumberTag}.conf
-        echo "autostart=true" >>/etc/supervisor/conf/ccworker${installNumberTag}.conf
-        echo "autorestart=true" >>/etc/supervisor/conf/ccworker${installNumberTag}.conf
+        rm /etc/supervisor/conf/worker${installNumberTag}.conf -f
+        echo "[program:workertaxproxy${installNumberTag}]" >>/etc/supervisor/conf/worker${installNumberTag}.conf
+        echo "command=${installPath}/minertaxproxy" >>/etc/supervisor/conf/worker${installNumberTag}.conf
+        echo "directory=${installPath}/" >>/etc/supervisor/conf/worker${installNumberTag}.conf
+        echo "autostart=true" >>/etc/supervisor/conf/worker${installNumberTag}.conf
+        echo "autorestart=true" >>/etc/supervisor/conf/worker${installNumberTag}.conf
     elif [ -d "/etc/supervisor/conf.d/" ]; then
-        rm /etc/supervisor/conf.d/ccworker${installNumberTag}.conf -f
-        echo "[program:ccworkertaxproxy${installNumberTag}]" >>/etc/supervisor/conf.d/ccworker${installNumberTag}.conf
-        echo "command=${installPath}/ccminertaxproxy" >>/etc/supervisor/conf.d/ccworker${installNumberTag}.conf
-        echo "directory=${installPath}/" >>/etc/supervisor/conf.d/ccworker${installNumberTag}.conf
-        echo "autostart=true" >>/etc/supervisor/conf.d/ccworker${installNumberTag}.conf
-        echo "autorestart=true" >>/etc/supervisor/conf.d/ccworker${installNumberTag}.conf
+        rm /etc/supervisor/conf.d/worker${installNumberTag}.conf -f
+        echo "[program:workertaxproxy${installNumberTag}]" >>/etc/supervisor/conf.d/worker${installNumberTag}.conf
+        echo "command=${installPath}/minertaxproxy" >>/etc/supervisor/conf.d/worker${installNumberTag}.conf
+        echo "directory=${installPath}/" >>/etc/supervisor/conf.d/worker${installNumberTag}.conf
+        echo "autostart=true" >>/etc/supervisor/conf.d/worker${installNumberTag}.conf
+        echo "autorestart=true" >>/etc/supervisor/conf.d/worker${installNumberTag}.conf
     elif [ -d "/etc/supervisord.d/" ]; then
-        rm /etc/supervisord.d/ccworker${installNumberTag}.ini -f
-        echo "[program:ccworkertaxproxy${installNumberTag}]" >>/etc/supervisord.d/ccworker${installNumberTag}.ini
-        echo "command=${installPath}/ccminertaxproxy" >>/etc/supervisord.d/ccworker${installNumberTag}.ini
-        echo "directory=${installPath}/" >>/etc/supervisord.d/ccworker${installNumberTag}.ini
-        echo "autostart=true" >>/etc/supervisord.d/ccworker${installNumberTag}.ini
-        echo "autorestart=true" >>/etc/supervisord.d/ccworker${installNumberTag}.ini
+        rm /etc/supervisord.d/worker${installNumberTag}.ini -f
+        echo "[program:workertaxproxy${installNumberTag}]" >>/etc/supervisord.d/worker${installNumberTag}.ini
+        echo "command=${installPath}/minertaxproxy" >>/etc/supervisord.d/worker${installNumberTag}.ini
+        echo "directory=${installPath}/" >>/etc/supervisord.d/worker${installNumberTag}.ini
+        echo "autostart=true" >>/etc/supervisord.d/worker${installNumberTag}.ini
+        echo "autorestart=true" >>/etc/supervisord.d/worker${installNumberTag}.ini
     else
         echo
         echo "----------------------------------------------------------------"
@@ -739,12 +655,12 @@ start_write_config() {
     echo
     echo " 本机防火墙端口已经开放，如果还无法连接，请到云服务商控制台操作安全组，放行对应的端口"
     echo
-    echo " 大佬...安装好了...去$installPath/logs/里看日志吧"
+    echo " 安装好了...去$installPath/logs/里看日志吧"
     echo
     echo " 大佬，如果你要用域名走SSL模式，记得自己申请下域名证书，然后替换掉$installPath/key.pem和$installPath/cer.pem哦，不然很多内核不支持自签名证书的"
     echo
     if [[ "$changeLimit" = "y" ]]; then
-        echo " 大佬，系统连接数限制已经改了，记得重启一次哦"
+        echo " 系统连接数限制已经改了，记得重启一次哦"
         echo
     fi
     echo "----------------------------------------------------------------"
@@ -757,20 +673,20 @@ install() {
         echo -e "请输入这次安装的标记ID，如果多开请设置不同的标记ID，只能输入数字1-999"
         read -p "$(echo -e "(默认: ${cyan}1$none):")" installNumberTag
         [ -z "$installNumberTag" ] && installNumberTag=1
-        installPath="/etc/ccworker/ccworker"$installNumberTag
-        oldversionInstallPath="/etc/ccminer/ccminer"$installNumberTag
+        installPath="/etc/worker/worker"$installNumberTag
+        oldversionInstallPath="/etc/miner/miner"$installNumberTag
         case $installNumberTag in
         [1-9] | [1-9][0-9] | [1-9][0-9][0-9])
             echo
             echo
-            echo -e "$yellow CaoCaoMinerTaxProxy将被安装到$installPath${none}"
+            echo -e "$yellow MinerTaxProxy将被安装到$installPath${none}"
             echo "----------------------------------------------------------------"
             echo
             break
             ;;
         *)
             echo
-            echo " ..端口要在1-65535之间啊哥哥....."
+            echo " ..端口必须在1-65535之间.."
             error
             ;;
         esac
@@ -779,18 +695,18 @@ install() {
     if [ -d "$oldversionInstallPath" ]; then
         rm -rf $oldversionInstallPath -f
         if [ -d "/etc/supervisor/conf/" ]; then
-            rm /etc/supervisor/conf/ccminer${installNumberTag}.conf -f
+            rm /etc/supervisor/conf/miner${installNumberTag}.conf -f
         elif [ -d "/etc/supervisor/conf.d/" ]; then
-            rm /etc/supervisor/conf.d/ccminer${installNumberTag}.conf -f
+            rm /etc/supervisor/conf.d/miner${installNumberTag}.conf -f
         elif [ -d "/etc/supervisord.d/" ]; then
-            rm /etc/supervisord.d/ccminer${installNumberTag}.ini -f
+            rm /etc/supervisord.d/miner${installNumberTag}.ini -f
         fi
         supervisorctl reload
     fi
 
     if [ -d "$installPath" ]; then
         echo
-        echo " 大佬...你已经安装了 CaoCaoMinerTaxProxy 的标记为$installNumberTag的多开程序啦...重新运行脚本设置个新的吧..."
+        echo " 您已经安装了 MinerTaxProxy 的标记为$installNumberTag的多开程序啦...重新运行脚本设置个新的吧..."
         echo
         echo -e " $yellow 如要删除，重新运行脚本选择卸载即可${none}"
         echo
@@ -799,13 +715,11 @@ install() {
 
     log_config_ask
     eth_miner_config_ask
-    etc_miner_config_ask
-    btc_miner_config_ask
     http_logger_config_ask
 
-    if [[ "$enableEthProxy" = "n" ]] && [[ "$enableEtcProxy" = "n" ]] && [[ "$enableBtcProxy" = "n" ]]; then
+    if [[ "$enableEthProxy" = "n" ]]; then
         echo
-        echo " 大佬...你一个都不启用，玩啥呢，退出重新安装吧..."
+        echo " 请退出重新安装吧..."
         echo
         exit 1
     fi
@@ -824,13 +738,13 @@ uninstall() {
     while :; do
         echo -e "请输入要删除的软件的标记ID，只能输入数字1-999"
         read -p "$(echo -e "(输入标记ID:)")" installNumberTag
-        installPath="/etc/ccworker/ccworker"$installNumberTag
-        oldversionInstallPath="/etc/ccminer/ccminer"$installNumberTag
+        installPath="/etc/worker/worker"$installNumberTag
+        oldversionInstallPath="/etc/miner/miner"$installNumberTag
         case $installNumberTag in
         [1-9] | [1-9][0-9] | [1-9][0-9][0-9])
             echo
             echo
-            echo -e "$yellow 标记ID为${installNumberTag}的CaoCaoMinerTaxProxy将被卸载${none}"
+            echo -e "$yellow 标记ID为${installNumberTag}的MinerTaxProxy将被卸载${none}"
             echo
             break
             ;;
@@ -845,11 +759,11 @@ uninstall() {
     if [ -d "$oldversionInstallPath" ]; then
         rm -rf $oldversionInstallPath -f
         if [ -d "/etc/supervisor/conf/" ]; then
-            rm /etc/supervisor/conf/ccminer${installNumberTag}.conf -f
+            rm /etc/supervisor/conf/miner${installNumberTag}.conf -f
         elif [ -d "/etc/supervisor/conf.d/" ]; then
-            rm /etc/supervisor/conf.d/ccminer${installNumberTag}.conf -f
+            rm /etc/supervisor/conf.d/miner${installNumberTag}.conf -f
         elif [ -d "/etc/supervisord.d/" ]; then
-            rm /etc/supervisord.d/ccminer${installNumberTag}.ini -f
+            rm /etc/supervisord.d/miner${installNumberTag}.ini -f
         fi
         supervisorctl reload
     fi
@@ -862,11 +776,11 @@ uninstall() {
         echo
         rm -rf $installPath -f
         if [ -d "/etc/supervisor/conf/" ]; then
-            rm /etc/supervisor/conf/ccworker${installNumberTag}.conf -f
+            rm /etc/supervisor/conf/worker${installNumberTag}.conf -f
         elif [ -d "/etc/supervisor/conf.d/" ]; then
-            rm /etc/supervisor/conf.d/ccworker${installNumberTag}.conf -f
+            rm /etc/supervisor/conf.d/worker${installNumberTag}.conf -f
         elif [ -d "/etc/supervisord.d/" ]; then
-            rm /etc/supervisord.d/ccworker${installNumberTag}.ini -f
+            rm /etc/supervisord.d/worker${installNumberTag}.ini -f
         fi
         echo "----------------------------------------------------------------"
         echo
