@@ -1,490 +1,870 @@
 #!/bin/bash
-# centos/debian WordPress一键安装脚本
-# Author: tlanyan
-# link: https://tlanyan.me
+# Usable tylemp.sh on Debian 10.
+# Version: Stable-20200228
+# Change log 20200228: Fix the rewrite rules of typecho
+# Change log 20200227: keep Openssh-server instead of installing dropbear
 
-RED="\033[31m"      # Error message
-GREEN="\033[32m"    # Success message
-YELLOW="\033[33m"   # Warning message
-BLUE="\033[36m"     # Info message
-PLAIN='\033[0m'
+function get_phpsockpath() {
+	# get the path of php socks file
+	phpsockpath="$(ls /run/php/php*.sock | head -n 1)"
 
-colorEcho() {
-    echo -e "${1}${@:2}${PLAIN}"
 }
 
-checkSystem() {
-    uid=$(id -u)
-    if [[ $uid -ne 0 ]]; then
-        colorEcho $RED " 请以root身份执行该脚本"
-        exit 1
-    fi
-
-    res=$(command -v yum)
-    if [[ "$res" = "" ]]; then
-        res=$(command -v apt)
-        if [[ "$res" = "" ]]; then
-            colorEcho $RED " 不受支持的Linux系统"
-            exit 1
-        fi
-        PMT="apt"
-        CMD_INSTALL="apt install -y "
-        CMD_REMOVE="apt remove -y "
-        CMD_UPGRADE="apt update; apt upgrade -y; apt autoremove -y"
-        PHP_SERVICE="php7.4-fpm"
-        PHP_CONFIG_FILE="/etc/php/7.4/fpm/php.ini"
-        PHP_POOL_FILE="/etc/php/7.4/fpm/pool.d/www.conf"
-    else
-        PMT="yum"
-        CMD_INSTALL="yum install -y "
-        CMD_REMOVE="yum remove -y "
-        CMD_UPGRADE="yum update -y"
-        PHP_SERVICE="php-fpm"
-        PHP_CONFIG_FILE="/etc/php.ini"
-        PHP_POOL_FILE="/etc/php-fpm.d/www.conf"
-        result=`grep -oE "[0-9.]+" /etc/centos-release`
-        MAIN=${result%%.*}
-    fi
-    res=$(command -v systemctl)
-    if [[ "$res" = "" ]]; then
-        colorEcho $RED " 系统版本过低，请升级到最新版本"
-        exit 1
-    fi
+function check_install() {
+	if [ -z "$(which "$1" 2>/dev/null)" ]; then
+		executable=$1
+		shift
+		while [ -n "$1" ]; do
+			DEBIAN_FRONTEND=noninteractive apt-get -q -y install "$1"
+			print_info "$1 installed for $executable"
+			shift
+		done
+	else
+		print_warn "$2 already installed"
+	fi
 }
 
-collect() {
-    read -p " 运行该脚本可能会导致数据库信息丢失，是否继续？[y/n]" answer
-    [[ "$answer" != "y" && "$answer" != "Y" ]] && exit 0
-
-    while true
-    do
-        read -p " 请输入您的域名：" DOMAIN
-        if [[ ! -z "$DOMAIN" ]]; then
-            break
-        fi
-    done
+function check_remove() {
+	if [ -n "$(which "$1" 2>/dev/null)" ]; then
+		DEBIAN_FRONTEND=noninteractive apt-get -q -y remove --purge "$2"
+		print_info "$2 removed"
+	else
+		print_warn "$2 is not installed"
+	fi
 }
 
-preInstall() {
-    $PMT clean all
-    [[ "$PMT" = "apt" ]] && $PMT update
+function check_sanity() {
+	# Do some sanity checking.
+	if [ $(/usr/bin/id -u) != "0" ]; then
+		die 'Must be run by root user'
+	fi
 
-    colorEcho $BLUE " 安装必要软件"
-    if [[ "$PMT" = "yum" ]]; then
-        $CMD_INSTALL epel-release
-    fi
-    $CMD_INSTALL wget vim unzip tar net-tools
+	if [ ! -f /etc/debian_version ]; then
+		die "Distribution is not supported"
+	fi
 }
 
-installNginx() {
-    colorEcho $BLUE " 安装nginx..."
-    if [[ "$PMT" = "yum" ]]; then
-        $CMD_INSTALL epel-release 
-    fi
-    $CMD_INSTALL nginx
-    systemctl enable nginx
+function die() {
+	echo "ERROR: $1" >/dev/null 1>&2
+	exit 1
 }
 
-installPHP() {
-    [[ "$PMT" = "apt" ]] && $PMT update
-    $CMD_INSTALL curl wget ca-certificates
-    if [[ "$PMT" = "yum" ]]; then 
-        $CMD_INSTALL epel-release
-        if [[ $MAIN -eq 7 ]]; then
-            rpm -iUh https://rpms.remirepo.net/enterprise/remi-release-7.rpm
-            sed -i '0,/enabled=0/{s/enabled=0/enabled=1/}' /etc/yum.repos.d/remi-php74.repo
-        else
-            rpm -iUh https://rpms.remirepo.net/enterprise/remi-release-8.rpm
-            sed -i '0,/enabled=0/{s/enabled=0/enabled=1/}' /etc/yum.repos.d/remi.repo
-            dnf module install -y php:remi-7.4
-        fi
-        $CMD_INSTALL php-cli php-fpm php-bcmath php-gd php-mbstring php-mysqlnd php-pdo php-opcache php-xml php-pecl-zip php-pecl-imagick
-    else
-        $CMD_INSTALL lsb-release gnupg2
-        wget -q https://packages.sury.org/php/apt.gpg -O- | apt-key add -
-        echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/php7.list
-        $PMT update
-        $CMD_INSTALL php7.4-cli php7.4-fpm php7.4-bcmath php7.4-gd php7.4-mbstring php7.4-mysql php7.4-opcache php7.4-xml php7.4-zip php7.4-json php7.4-imagick
-        #update-alternatives --set php /usr/bin/php7.4
-    fi
-    systemctl enable $PHP_SERVICE
+function get_domain_name() {
+	# Getting rid of the lowest part.
+	domain=${1%.*}
+	lowest=$(expr "$domain" : '.*\.\([a-z][a-z]*\)')
+	case "$lowest" in
+	com | net | org | gov | edu | co)
+		domain=${domain%.*}
+		;;
+	esac
+	lowest=$(expr "$domain" : '.*\.\([a-z][a-z]*\)')
+	[ -z "$lowest" ] && echo "$domain" || echo "$lowest"
 }
 
-installMysql() {
-    if [[ "$PMT" = "yum" ]]; then 
-        yum remove -y MariaDB-server
-        if [ ! -f /etc/yum.repos.d/mariadb.repo ]; then
-            if [ $MAIN -eq 7 ]; then
-                echo '# MariaDB 10.5 CentOS repository list - created 2019-11-23 15:00 UTC
-# http://downloads.mariadb.org/mariadb/repositories/
-[mariadb]
-name = MariaDB
-baseurl = http://yum.mariadb.org/10.5/centos7-amd64
-gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB
-gpgcheck=1' >> /etc/yum.repos.d/mariadb.repo
-            else
-                echo '# MariaDB 10.5 CentOS repository list - created 2020-03-11 16:29 UTC
-# http://downloads.mariadb.org/mariadb/repositories/
-[mariadb]
-name = MariaDB
-baseurl = http://yum.mariadb.org/10.5/centos8-amd64
-module_hotfixes=1
-gpgkey=https://yum.mariadb.org/RPM-GPG-KEY-MariaDB
-gpgcheck=1' >>  /etc/yum.repos.d/mariadb.repo
-            fi
-        fi
-        yum install -y MariaDB-server
-    else
-        $PMT update
-        $CMD_INSTALL mariadb-server
-    fi
-    systemctl enable mariadb.service
+function get_password() {
+	# Check whether our local salt is present.
+	SALT=/var/lib/radom_salt
+	if [ ! -f "$SALT" ]; then
+		head -c 512 /dev/urandom >"$SALT"
+		chmod 400 "$SALT"
+	fi
+	password=$( (
+		cat "$SALT"
+		echo $1
+	) | md5sum | base64)
+	echo ${password:0:13}
 }
 
-installRedis() {
-    $CMD_INSTALL redis
-    systemctl enable redis
+function install_dash() {
+	check_install dash dash
+	rm -f /bin/sh
+	ln -s dash /bin/sh
 }
 
-installWordPress() {
-    mkdir -p /var/www
-    wget https://cn.wordpress.org/latest-zh_CN.tar.gz
-    if [[ ! -f latest-zh_CN.tar.gz ]]; then
-    	colorEcho $RED " 下载WordPress失败，请稍后重试"
-	    exit 1
-    fi
-    tar -zxf latest-zh_CN.tar.gz
-    rm -rf /var/www/$DOMAIN
-    mv wordpress /var/www/$DOMAIN
-    rm -rf latest-zh_CN.tar.gz
+function install_sshd() {
+	check_install ssd openssh-server
+
+	# easier to configure and might be used for other things.
 }
 
-config() {
-    # config mariadb
-    systemctl start mariadb
-    DBNAME="wordpress"
-    DBUSER="wordpress"
-    DBPASS=`cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 16 | head -n 1`
-    mysql -uroot <<EOF
-DELETE FROM mysql.user WHERE User='';
-CREATE DATABASE $DBNAME default charset utf8mb4;
-CREATE USER ${DBUSER}@'%' IDENTIFIED BY '${DBPASS}';
-GRANT ALL PRIVILEGES ON ${DBNAME}.* to ${DBUSER}@'%';
-FLUSH PRIVILEGES;
-EOF
-
-    #config php
-    sed -i 's/expose_php = On/expose_php = Off/' $PHP_CONFIG_FILE
-    line=`grep 'date.timezone' $PHP_CONFIG_FILE | tail -n1 | awk '{print $1}'`
-    sed -i "${line}a date.timezone = Asia/Shanghai" $PHP_CONFIG_FILE
-    sed -i 's/php_value\[session.save_handler\] = files/php_value\[session.save_handler\] = redis/' $PHP_POOL_FILE
-    sed -i 's/php_value\[session.save_path\]    = \/var\/lib\/php\/session/php_value\[session.save_path\]    = "tcp:\/\/127.0.0.1:6379"/' $PHP_POOL_FILE
-
-    # config wordpress
-    cd /var/www/$DOMAIN
-    cp wp-config-sample.php wp-config.php
-    sed -i "s/database_name_here/$DBNAME/g" wp-config.php
-    sed -i "s/username_here/$DBUSER/g" wp-config.php
-    sed -i "s/password_here/$DBPASS/g" wp-config.php
-    sed -i "s/utf8/utf8mb4/g" wp-config.php
-    perl -i -pe'
-  BEGIN {
-    @chars = ("a" .. "z", "A" .. "Z", 0 .. 9);
-    push @chars, split //, "!@#$%^&*()-_ []{}<>~\`+=,.;:/?|";
-    sub salt { join "", map $chars[ rand @chars ], 1 .. 64 }
-  }
-  s/put your unique phrase here/salt()/ge
-' wp-config.php
-    if [[ "$PMT" = "yum" ]]; then
-        user="apache"
-        # config nginx
-        [[ $MAIN -eq 7 ]] && upstream="127.0.0.1:9000" || upstream="php-fpm"
-    else
-        user="www-data"
-        upstream="unix:/run/php/php7.4-fpm.sock"
-    fi
-    chown -R $user:$user /var/www/${DOMAIN}
-
-    # config nginx
-    res=`id nginx 2>/dev/null`
-    if [[ "$?" != "0" ]]; then
-        user="www-data"
-    else
-        user="nginx"
-    fi
-    mv /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
-    cat > /etc/nginx/nginx.conf<<-EOF
-user $user;
-worker_processes auto;
-error_log /var/log/nginx/error.log;
-pid /run/nginx.pid;
-
-# Load dynamic modules. See /usr/share/nginx/README.dynamic.
-include /usr/share/nginx/modules/*.conf;
-
-events {
-    worker_connections 1024;
+function install_exim4() {
+	check_install mail exim4
+	if [ -f /etc/exim4/update-exim4.conf.conf ]; then
+		sed -i \
+			"s/dc_eximconfig_configtype='local'/dc_eximconfig_configtype='internet'/" \
+			/etc/exim4/update-exim4.conf.conf
+		invoke-rc.d exim4 restart
+	fi
 }
 
-http {
-    log_format  main  '\$remote_addr - \$remote_user [\$time_local] "\$request" '
-                      '\$status \$body_bytes_sent "\$http_referer" '
-                      '"\$http_user_agent" "\$http_x_forwarded_for" "\$request_time"';
+function install_mysql() {
+	# Install the MariaDB packages
+	check_install mysqld mariadb-server
+	check_install mysql mariadb-client
 
-    access_log  /var/log/nginx/access.log  main buffer=32k flush=30s;
+	invoke-rc.d mysql stop
+	# all the related files.
+	cat >/etc/mysql/conf.d/actgod.cnf <<END
+[mysqld]
+key_buffer_size = 8M
+query_cache_size = 0
+END
+	invoke-rc.d mysql start
 
-    server_tokens       off;
-    client_max_body_size 100m;
-
-    sendfile            on;
-    tcp_nopush          on;
-    tcp_nodelay         on;
-    keepalive_timeout   65;
-    types_hash_max_size 2048;
-
-    include             /etc/nginx/mime.types;
-    default_type        application/octet-stream;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-SHA384;
-    ssl_ecdh_curve secp384r1; 
-    ssl_prefer_server_ciphers on;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    ssl_session_tickets off;
-    ssl_stapling on; # Requires nginx >= 1.3.7
-    ssl_stapling_verify on; # Requires nginx => 1.3.7
-    add_header Strict-Transport-Security "max-age=63072000; preload";
-    #add_header X-Frame-Options DENY;
-    add_header X-Frame-Options SAMEORIGIN;
-    add_header X-Content-Type-Options nosniff;
-    add_header X-XSS-Protection "1; mode=block";
-
-    fastcgi_cache_path /dev/shm/wordpress levels=1:2 keys_zone=wordpress:30m inactive=30m use_temp_path=off;
-    fastcgi_cache_key \$request_method\$scheme\$host\$request_uri;
-    fastcgi_cache_lock on;
-    fastcgi_cache_use_stale error timeout invalid_header updating http_500;
-    fastcgi_cache_valid 200 301 302 30m;
-    fastcgi_cache_valid 404 10m;
-    fastcgi_ignore_headers Expires Set-Cookie Vary;
-
-    gzip on;
-    gzip_min_length  2k;
-    gzip_buffers     4 16k;
-    gzip_comp_level 4;
-    gzip_types
-        text/css
-        text/plain
-        text/javascript
-        application/javascript
-        application/json
-        application/x-javascript
-        application/xml
-        application/xml+rss
-        application/xhtml+xml
-        application/x-font-ttf
-        application/x-font-opentype
-        application/vnd.ms-fontobject
-        image/svg+xml
-        application/rss+xml
-        application/atom_xml
-        image/jpeg
-        image/gif
-        image/png
-        image/icon
-        image/bmp
-        image/jpg;
-    gzip_vary on;
-
-    # Load modular configuration files from the /etc/nginx/conf.d directory.
-    # See http://nginx.org/en/docs/ngx_core_module.html#include
-    # for more information.
-    include /etc/nginx/conf.d/*.conf;
+	# Generating a new password for the root user.
+	passwd=$(get_password root@mysql)
+	mysqladmin password "$passwd"
+	cat >~/.my.cnf <<END
+[client]
+user = root
+password = $passwd
+END
+	chmod 600 ~/.my.cnf
 }
-EOF
-    cat > /etc/nginx/conf.d/${DOMAIN}.conf<<-EOF
+
+function install_nginx() {
+	check_install nginx nginx
+
+	# Need to increase the bucket size for Debian 5.
+	if [ ! -d /etc/nginx ]; then
+		mkdir /etc/nginx
+	fi
+	if [ ! -d /etc/nginx/conf.d ]; then
+		mkdir /etc/nginx/conf.d
+	fi
+
+	sed -i s/'^worker_processes [0-9];'/'worker_processes 1;'/g /etc/nginx/nginx.conf
+	sed -i s/'^user  nginx;'/'user  www-data;'/g /etc/nginx/nginx.conf
+	sed -i s/'# gzip_'/'gzip_'/g /etc/nginx/nginx.conf
+	invoke-rc.d nginx restart
+	if [ ! -d /var/www ]; then
+		mkdir /var/www
+	fi
+	cat >/etc/nginx/proxy.conf <<EXND
+proxy_connect_timeout 30s;
+proxy_send_timeout   90;
+proxy_read_timeout   90;
+proxy_buffer_size    32k;
+proxy_buffers     4 32k;
+proxy_busy_buffers_size 64k;
+proxy_redirect     off;
+proxy_hide_header  Vary;
+proxy_set_header   Accept-Encoding '';
+proxy_set_header   Host   \$host;
+proxy_set_header   Referer \$http_referer;
+proxy_set_header   Cookie \$http_cookie;
+proxy_set_header   X-Real-IP  \$remote_addr;
+proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+EXND
+}
+
+function install_php() {
+	service mysql stop
+	service nginx stop
+	apt-get -q -y install php-fpm php-mysqlnd php-gd php-tidy php-curl git curl zip unzip php-dom php-mbstring
+	service mysql start
+	service nginx start
+}
+
+function install_syslogd() {
+	# We just need a simple vanilla syslogd. Also there is no need to log to
+	# so many files (waste of fd). Just dump them into
+	# /var/log/(cron/mail/messages)
+	check_install /usr/sbin/syslogd inetutils-syslogd
+	invoke-rc.d inetutils-syslogd stop
+
+	for file in /var/log/*.log /var/log/mail.* /var/log/debug /var/log/syslog; do
+		[ -f "$file" ] && rm -f "$file"
+	done
+	for dir in fsck news; do
+		[ -d "/var/log/$dir" ] && rm -rf "/var/log/$dir"
+	done
+
+	cat >/etc/syslog.conf <<END
+*.*;mail.none;cron.none -/var/log/messages
+cron.*		      -/var/log/cron
+mail.*		      -/var/log/mail
+END
+
+	[ -d /etc/logrotate.d ] || mkdir -p /etc/logrotate.d
+	cat >/etc/logrotate.d/inetutils-syslogd <<END
+/var/log/cron
+/var/log/mail
+/var/log/messages {
+   rotate 4
+   weekly
+   missingok
+   notifempty
+   compress
+   sharedscripts
+   postrotate
+		/etc/init.d/inetutils-syslogd reload >/dev/null
+   endscript
+}
+END
+
+	invoke-rc.d inetutils-syslogd start
+}
+
+function install_vhost() {
+	check_install wget wget
+	if [ -z "$1" ]; then
+		die "Usage: $(basename $0) vhost <hostname>"
+	fi
+
+	if [ ! -d /var/www ]; then
+		mkdir /var/www
+	fi
+	mkdir "/var/www/$1"
+	chown -R www-data "/var/www/$1"
+	chmod -R 755 "/var/www/$1"
+
+	# Setting up Nginx mapping
+	cat >"/etc/nginx/conf.d/$1.conf" <<END
 server {
-    listen 80;
-    server_name ${DOMAIN};
+	server_name $1;
+	root /var/www/$1;
+	location / {
+		index index.html index.htm;
+	}
+}
+END
+	invoke-rc.d nginx reload
+
+	cat >"/var/www/$1/index.html" <<END
+Hello world!
+		----$2
+END
+	invoke-rc.d nginx reload
+}
+
+function install_dhost() {
+	check_install wget wget
+	if [ ! -d /var/www ]; then
+		mkdir /var/www
+	fi
+	if [ -z "$1" ]; then
+		die "Usage: $(basename $0) dhost <hostname>"
+	fi
+	mkdir "/var/www/$1"
+	chown -R www-data "/var/www/$1"
+	chmod -R 755 "/var/www/$1"
+
+	# Setting up Nginx mapping
+	cat >"/etc/nginx/conf.d/$1.conf" <<END
+server
+	{
+		listen       80;
+		server_name $1;
+		index index.html index.htm index.php default.html default.htm default.php;
+		root  /var/www/$1;
+
+		location / 
+			{
+				try_files $uri $uri/ /index.php;
+			}
+
+		location ~ \.php$ 
+			{
+				try_files \$uri =404;
+				fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+				include fastcgi_params;
+				fastcgi_pass unix:tianyiphpsockpath;
+			}
+	
+		location ~ .*\.(gif|jpg|jpeg|png|bmp|swf|ico)$
+			{
+				expires      30d;
+			}
+
+		location ~ .*\.(js|css)?$
+			{
+				expires      30d;
+			}
+
+	}
+END
+	get_phpsockpath
+	sed -i s#tianyiphpsockpath#$phpsockpath#g /etc/nginx/conf.d/$1.conf
+
+	invoke-rc.d nginx reload
+}
+
+function install_typecho() {
+	check_install wget wget
+	if [ ! -d /var/www ]; then
+		mkdir /var/www
+	fi
+	if [ -z "$1" ]; then
+		die "Usage: $(basename $0) typecho <hostname>"
+	fi
+
+	# Downloading the typecho' latest and greatest distribution.
+	mkdir /tmp/typecho.$$
+	wget -O - "http://typecho.org/downloads/1.1-17.10.30-release.tar.gz" |
+		tar zxf - -C /tmp/typecho.$$
+	mv /tmp/typecho.$$/build/ "/var/www/$1"
+	rm -rf /tmp/typecho.$$
+	chown -R www-data "/var/www/$1"
+	chmod -R 755 "/var/www/$1"
+
+	# Setting up the MySQL database
+	dbname=$(echo $1 | tr . _)
+	userid=$(get_domain_name $1)
+	# MySQL userid cannot be more than 15 characters long
+	userid="${dbname:0:15}"
+	passwd=$(get_password "$userid@mysql")
+
+	mysqladmin create "$dbname"
+	echo "GRANT ALL PRIVILEGES ON \`$dbname\`.* TO \`$userid\`@localhost IDENTIFIED BY '$passwd';" |
+		mysql
+
+	# Setting up Nginx mapping
+
+	cat >"/etc/nginx/conf.d/$1.conf" <<'END'
     
-    charset utf-8;
-    
-    set \$host_path "/var/www/${DOMAIN}";
-    access_log  /var/log/nginx/${DOMAIN}.access.log  main buffer=32k flush=30s;
-    error_log /var/log/nginx/${DOMAIN}.error.log;
+server
+	{
+		listen       80;
 
-    root   \$host_path;
+		server_name tydomain;
+		index index.html index.htm index.php default.html default.htm default.php;
+		root  /var/www/tydomain;
 
-    set \$skip_cache 0;
-    if (\$query_string != "") {
-        set \$skip_cache 1;
-    }
-    if (\$request_uri ~* "/wp-admin/|/xmlrpc.php|wp-.*.php|/feed/|sitemap(_index)?.xml") {
-        set \$skip_cache 1;
-    }
-    # 登录用户或发表评论者
-    if (\$http_cookie ~* "comment_author|wordpress_[a-f0-9]+|wp-postpass|wordpress_no_cache|wordpress_logged_in") {
-        set \$skip_cache 1;
-    }
-
-    location = / {
-        index  index.php index.html;
-        try_files /index.php?\$args /index.php?\$args;
-    }
-
+	## 支持伪静态
     location / {
-        index  index.php index.html;
-        try_files \$uri \$uri/ /index.php?\$args;
-    }
-    location ~ ^/\.user\.ini {
-            deny all;
-    }
+		index index.html index.php;
+		if (-f $request_filename/index.html) {
+			rewrite (.*) $1/index.html break;
+		}
+		if (-f $request_filename/index.php) {
+			rewrite (.*) $1/index.php;
+		}
+		if (!-f $request_filename) {
+			rewrite (.*) /index.php;
+		}
+	}
 
-    location ~ \.php\$ {
-        try_files \$uri =404;
-        fastcgi_index index.php;
-        fastcgi_cache wordpress;
-        fastcgi_cache_bypass \$skip_cache;
-        fastcgi_no_cache \$skip_cache;
-        fastcgi_pass $upstream;
-        include fastcgi_params;
-        fastcgi_param  SCRIPT_FILENAME  \$document_root\$fastcgi_script_name;
-    }
-    location ~ \.(js|css|png|jpg|jpeg|gif|ico|swf|webp|pdf|txt|doc|docx|xls|xlsx|ppt|pptx|mov|fla|zip|rar)\$ {
-        expires max;
-        access_log off;
-        try_files \$uri =404;
-    }
+    location ~ .*\.php(\/.*)*$ {
+		fastcgi_index  index.php;
+		fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+		include fastcgi_params;
+		fastcgi_pass unix:tianyiphpsockpath;
+
+	}
+
+	location ~ .*\.(gif|jpg|jpeg|png|bmp|swf|ico)$ {
+
+		expires 30d;
+	}
+
+	location ~ .*\.(js|css)?$ {
+
+		expires 30d;
+	}
+
 }
-EOF
+END
+	sed -i s/tydomain/$1/g /etc/nginx/conf.d/$1.conf
+    get_phpsockpath
+	sed -i s#tianyiphpsockpath#$phpsockpath#g /etc/nginx/conf.d/$1.conf
+	invoke-rc.d nginx reload
 
-    #disable selinux
-    if [ -s /etc/selinux/config ] && grep 'SELINUX=enforcing' /etc/selinux/config; then
-        sed -i 's/SELINUX=enforcing/SELINUX=permissive/g' /etc/selinux/config
-        setenforce 0
-    fi
+	cat >>"/root/$1.mysql.txt" <<END
+[typecho_myqsl]
+dbname = $dbname
+username = $userid
+password = $passwd
+END
 
-    # firewall
-    setFirewall
-
-    # restart service
-    systemctl restart php-fpm mariadb nginx redis
-}
-
-setFirewall() {
-    res=`which firewall-cmd 2>/dev/null`
-    if [[ $? -eq 0 ]]; then
-        systemctl status firewalld > /dev/null 2>&1
-        if [[ $? -eq 0 ]];then
-            firewall-cmd --permanent --add-service=http
-            firewall-cmd --permanent --add-service=https
-            firewall-cmd --reload
-        else
-            nl=`iptables -nL | nl | grep FORWARD | awk '{print $1}'`
-            if [[ "$nl" != "3" ]]; then
-                iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-                iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-            fi
-        fi
-    else
-        res=`which iptables 2>/dev/null`
-        if [[ $? -eq 0 ]]; then
-            nl=`iptables -nL | nl | grep FORWARD | awk '{print $1}'`
-            if [[ "$nl" != "3" ]]; then
-                iptables -I INPUT -p tcp --dport 80 -j ACCEPT
-                iptables -I INPUT -p tcp --dport 443 -j ACCEPT
-            fi
-        else
-            res=`which ufw 2>/dev/null`
-            if [[ $? -eq 0 ]]; then
-                res=`ufw status | grep -i inactive`
-                if [[ "$res" = "" ]]; then
-                    ufw allow http
-                    ufw allow https
-                fi
-            fi
-        fi
-    fi
+	echo "mysql dataname:" $dbname
+	echo "mysql username:" $userid
+	echo "mysql passwd:" $passwd
 }
 
-function installBBR()
-{
-    result=$(lsmod | grep bbr)
-    if [ "$result" != "" ]; then
-        colorEcho $YELLOW " BBR模块已安装"
-        INSTALL_BBR=false
-        return
-    fi
-    res=`hostnamectl | grep -i openvz`
-    if [ "$res" != "" ]; then
-        colorEcho $YELLOW " openvz机器，跳过安装"
-        INSTALL_BBR=false
-        return
-    fi
-    
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    sysctl -p
-    result=$(lsmod | grep bbr)
-    if [[ "$result" != "" ]]; then
-        colorEcho $GREEN " BBR模块已启用"
-        INSTALL_BBR=false
-        return
-    fi
+function install_wordpress_en() {
+	check_install wget wget
+	if [ -z "$1" ]; then
+		die "Usage: $(basename $0) wordpress <hostname>"
+	fi
 
-    colorEcho $BLUE " 安装BBR模块..."
-    if [[ "$PMT" = "yum" ]]; then
-        if [[ "$V6_PROXY" = "" ]]; then
-            rpm --import https://www.elrepo.org/RPM-GPG-KEY-elrepo.org
-            rpm -Uvh http://www.elrepo.org/elrepo-release-7.0-4.el7.elrepo.noarch.rpm
-            $CMD_INSTALL --enablerepo=elrepo-kernel kernel-ml
-            $CMD_REMOVE kernel-3.*
-            grub2-set-default 0
-            echo "tcp_bbr" >> /etc/modules-load.d/modules.conf
-            INSTALL_BBR=true
-        fi
-    else
-        $CMD_INSTALL --install-recommends linux-generic-hwe-16.04
-        grub-set-default 0
-        echo "tcp_bbr" >> /etc/modules-load.d/modules.conf
-        INSTALL_BBR=true
-    fi
+	# Downloading the WordPress' latest and greatest distribution.
+	mkdir /tmp/wordpress.$$
+	wget -O - http://wordpress.org/latest.tar.gz |
+		tar zxf - -C /tmp/wordpress.$$
+	mv /tmp/wordpress.$$/wordpress "/var/www/$1"
+	rm -rf /tmp/wordpress.$$
+	chown -R www-data "/var/www/$1"
+	chmod -R 755 "/var/www/$1"
+
+	# Setting up the MySQL database
+	dbname=$(echo $1 | tr . _)
+	userid=$(get_domain_name $1)
+	# MySQL userid cannot be more than 15 characters long
+	userid="${dbname:0:15}"
+	passwd=$(get_password "$userid@mysql")
+	cp "/var/www/$1/wp-config-sample.php" "/var/www/$1/wp-config.php"
+	sed -i "s/database_name_here/$dbname/; s/username_here/$userid/; s/password_here/$passwd/" \
+		"/var/www/$1/wp-config.php"
+	sed -i "31a define(\'WP_CACHE\', true);" "/var/www/$1/wp-config.php"
+	chown -R www-data "/var/www/$1"
+	mysqladmin create "$dbname"
+	echo "GRANT ALL PRIVILEGES ON \`$dbname\`.* TO \`$userid\`@localhost IDENTIFIED BY '$passwd';" |
+		mysql
+
+	# Setting up Nginx mapping
+	cat >"/etc/nginx/conf.d/$1.conf" <<END
+server
+	{
+		listen       80;
+		server_name $1;
+		index index.html index.htm index.php default.html default.htm default.php;
+		root  /var/www/$1;
+
+	location / {
+	        try_files \$uri \$uri/ /index.php;
+	}
+
+	location ~ \.php$ {
+	        try_files \$uri =404;
+	        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+	        include fastcgi_params;
+	        fastcgi_pass unix:tianyiphpsockpath;
+	}
+	
+		location ~ .*\.(gif|jpg|jpeg|png|bmp|swf|ico)$
+			{
+				expires      30d;
+			}
+
+		location ~ .*\.(js|css)?$
+			{
+				expires      30d;
+			}
+
+		$al
+	}
+	
+END
+	get_phpsockpath
+	sed -i s#tianyiphpsockpath#$phpsockpath#g /etc/nginx/conf.d/$1.conf
+
+	cat >>"/root/$1.mysql.txt" <<END
+[wordpress_myqsl]
+dbname = $dbname
+username = $userid
+password = $passwd
+END
+	invoke-rc.d nginx reload
+
 }
 
-showInfo() {
-    echo " WordPress安装成功！"
-    echo "==============================="
-    echo -e " WordPress安装路径：${RED}/var/www/${DOMAIN}${PLAIN}"
-    echo -e " WordPress数据库：${RED}${DBNAME}${PLAIN}"
-    echo -e " WordPress数据库用户名：${RED}${DBUSER}${PLAIN}"
-    echo -e " WordPress数据库密码：${RED}${DBPASS}${PLAIN}"
-    echo -e " 博客访问地址：${RED}http://${DOMAIN}${PLAIN}"
-    echo "==============================="
+function install_carbonforum() {
+	check_install wget wget
+	if [ -z "$1" ]; then
+		die "Usage: $(basename $0) carbon <hostname>"
+	fi
 
-    if [ "${INSTALL_BBR}" == "true" ]; then
-        echo  
-        echo  为使BBR模块生效，系统将在30秒后重启
-        echo  
-        echo -e "您可以按 ctrl + c 取消重启，稍后输入 ${RED}reboot${PLAIN} 重启系统"
-        sleep 30
-        reboot
-    fi
+	# Downloading the WordPress' latest and greatest distribution.
+	mkdir /tmp/carbonforum.$$
+	wget -O - https://github.com/lincanbin/Carbon-Forum/archive/5.0.1.tar.gz |
+		tar zxf - -C /tmp/carbonforum.$$
+	mv /tmp/carbonforum.$$/Carbon-Forum-* "/var/www/$1"
+	rm -rf /tmp/carbonforum.$$
+	chown -R www-data "/var/www/$1"
+	chmod -R 755 "/var/www/$1"
+
+	# Setting up the MySQL database
+	dbname=$(echo $1 | tr . _)
+	userid=$(get_domain_name $1)
+	# MySQL userid cannot be more than 15 characters long
+	userid="${dbname:0:15}"
+	passwd=$(get_password "$userid@mysql")
+	mysqladmin create "$dbname"
+	echo "GRANT ALL PRIVILEGES ON \`$dbname\`.* TO \`$userid\`@localhost IDENTIFIED BY '$passwd';" |
+		mysql
+
+	# Setting up Nginx mapping
+	cat >"/etc/nginx/conf.d/$1.conf" <<END
+server
+	{
+		listen       80;
+		server_name $1;
+		index index.html index.htm index.php default.html default.htm default.php;
+		root  /var/www/$1;
+
+	location / {
+	        try_files \$uri \$uri/ /index.php;
+	}
+
+	location ~ \.php$ {
+	        try_files \$uri =404;
+	        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+	        include fastcgi_params;
+	        fastcgi_pass unix:tianyiphpsockpath;
+	}
+	
+		location ~ .*\.(gif|jpg|jpeg|png|bmp|swf|ico)$
+			{
+				expires      30d;
+			}
+
+		location ~ .*\.(js|css)?$
+			{
+				expires      30d;
+			}
+
+	include /var/www/$1/nginx.conf;
+		$al
+	}	
+END
+	get_phpsockpath
+	sed -i s#tianyiphpsockpath#$phpsockpath#g /etc/nginx/conf.d/$1.conf
+
+	cat >>"/root/$1.mysql.txt" <<END
+[CarbonForum_myqsl]
+dbname = $dbname
+username = $userid
+password = $passwd
+END
+	invoke-rc.d nginx reload
+
+
+	echo "mysql dataname:" $dbname
+	echo "mysql username:" $userid
+	echo "mysql passwd:" $passwd
 }
 
-main() {
-    checkSystem
-    collect
-    preInstall
-    installNginx
-    installPHP
-    installMysql
-    installWordPress
-    installRedis
-    installBBR
+function install_rainloop() {
+	check_install wget wget
+	check_install bsdtar bsdtar
+	if [ -z "$1" ]; then
+		die "Usage: $(basename $0) rainloop <hostname>"
+	fi
 
-    config
+	# Downloading the Rainloop' latest and greatest distribution.
+	mkdir /tmp/rainloop.$$
+	wget -O - http://repository.rainloop.net/v2/webmail/rainloop-latest.zip |
+		bsdtar xf - -C /tmp/rainloop.$$
+	mv /tmp/rainloop.$$ "/var/www/$1"
+	rm -rf /tmp/rainloop.$$
+	cat >"/var/www/$1/.htaccess" <<END
+	php_value upload_max_filesize 8m
+	php_value post_max_size 25m
+END
+	chown -R www-data "/var/www/$1"
+	chmod -R 755 "/var/www/$1"
 
-    showInfo
+	#
+	# Setting up the MySQL database
+	dbname=$(echo $1 | tr . _)
+	userid=$(get_domain_name $1)
+	# MySQL userid cannot be more than 15 characters long
+	userid="${dbname:0:15}"
+	passwd=$(get_password "$userid@mysql")
+	mysqladmin create "$dbname"
+	echo "GRANT ALL PRIVILEGES ON \`$dbname\`.* TO \`$userid\`@localhost IDENTIFIED BY '$passwd';" |
+		mysql
+
+	# Setting up Nginx mapping
+	cat >"/etc/nginx/conf.d/$1.conf" <<END
+server
+		{
+		    listen       80;
+		    server_name $1;
+		    index index.html index.htm index.php default.html default.htm default.php;
+		    root  /var/www/$1;
+
+	location / {
+		try_files \$uri \$uri/ /index.php;
+	}
+
+	location ~ \.php$ {
+		try_files \$uri =404;
+		fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+		include fastcgi_params;
+		fastcgi_pass unix:tianyiphpsockpath;
+	}
+
+		location ~ .*\.(gif|jpg|jpeg|png|bmp|swf|ico)$
+				{
+						expires      30d;
+				}
+
+		    location ~ .*\.(js|css)?$
+				{
+						expires      30d;
+				}
+
+		    $al
+		}
+END
+	get_phpsockpath
+	sed -i s#tianyiphpsockpath#$phpsockpath#g /etc/nginx/conf.d/$1.conf
+
+	cat >>"/root/$1.mysql.txt" <<END
+[rainloop_myqsl]
+dbname = $dbname
+username = $userid
+password = $passwd
+END
+	invoke-rc.d nginx reload
+
+
 }
 
-main
+function install_phpmyadmin() {
+	check_install wget wget
+	if [ -z "$1" ]; then
+		die "Usage: $(basename $0) phpmyadmin <hostname>"
+	fi
+
+	# Downloading the phpmyadmin  latest and greatest distribution.
+	mkdir /tmp/phpmyadmin.$$ /var/www/$1
+	wget -O - https://www.phpmyadmin.net/downloads/phpMyAdmin-latest-all-languages.tar.gz |
+		tar zxf - -C /tmp/phpmyadmin.$$
+	mv /tmp/phpmyadmin.$$/phpMyAdmin* "/var/www/$1/phpMyAdmin"
+	rm -rf /tmp/phpmyadmin.$$
+	chown -R www-data "/var/www/$1"
+	chmod -R 755 "/var/www/$1"
+
+	# Setting up Nginx mapping
+	cat >"/etc/nginx/conf.d/$1.conf" <<END
+server
+	{
+		listen       80;
+		server_name $1;
+		index index.html index.htm index.php default.html default.htm default.php;
+		root  /var/www/$1;
+
+	location / {
+		try_files \$uri \$uri/ /index.php;
+	}
+
+	location ~ \.php$ {
+		try_files \$uri =404;
+		fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+		include fastcgi_params;
+		fastcgi_pass unix:tianyiphpsockpath;
+	}
+
+		location ~ .*\.(gif|jpg|jpeg|png|bmp|swf|ico)$
+			{
+				expires      30d;
+			}
+
+		location ~ .*\.(js|css)?$
+			{
+				expires      30d;
+			}
+
+		$al
+	}
+END
+	get_phpsockpath
+	sed -i s#tianyiphpsockpath#$phpsockpath#g /etc/nginx/conf.d/$1.conf
+
+	invoke-rc.d nginx reload
+	cat ~/.my.cnf
+}
+
+function print_info() {
+	echo -n -e '\e[1;36m'
+	echo -n $1
+	echo -e '\e[0m'
+}
+
+function print_warn() {
+	echo -n -e '\e[1;33m'
+	echo -n $1
+	echo -e '\e[0m'
+}
+
+function check_version() {
+	cat /etc/issue | grep "Linux 5"
+
+	if [ $? -ne 0 ]; then
+		cat >/etc/init.d/vzquota <<EndFunc
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:		     vzquota
+# Required-Start:
+# Required-Stop:
+# Should-Start:		 $local_fs $syslog
+# Should-Stop:		  $local_fs $syslog
+# Default-Start:		0 1 2 3 4 5 6
+# Default-Stop:
+# Short-Description:		Fixed(?) vzquota init script
+### END INIT INFO
+EndFunc
+	fi
+}
+
+function remove_unneeded() {
+	# Some Debian have portmap installed. We don't need that.
+	check_remove /sbin/portmap portmap
+
+	# Remove rsyslogd, which allocates ~30MB privvmpages on an OpenVZ system,
+	# which might make some low-end VPS inoperatable. We will do this even
+	# before running apt-get update.
+	check_remove /usr/sbin/rsyslogd rsyslog
+
+	# Other packages that seem to be pretty common in standard OpenVZ
+	# templates.
+	check_remove /usr/sbin/apache2 'apache2*'
+	check_remove /usr/sbin/named bind9
+	check_remove /usr/sbin/smbd 'samba*'
+	check_remove /usr/sbin/nscd nscd
+
+	# Need to stop sendmail as removing the package does not seem to stop it.
+	if [ -f /usr/lib/sm.bin/smtpd ]; then
+		invoke-rc.d sendmail stop
+		check_remove /usr/lib/sm.bin/smtpd 'sendmail*'
+	fi
+}
+
+function update_stable() {
+	apt-get -q -y update
+	apt-get -q -y upgrade
+	apt-get -q -y dist-upgrade
+	apt-get -y install libc6 perl debconf dialog bsdutils
+	apt-get -y install apt apt-utils dselect dpkg
+	#~ apt-get -q -y upgrade
+}
+
+function update_nginx() {
+	apt-get -q -y update
+	invoke-rc.d nginx stop
+	apt-get -q -y remove nginx
+	apt-get -q -y install nginx
+	if [ ! -d /etc/nginx ]; then
+		mkdir /etc/nginx
+	fi
+	if [ ! -d /etc/nginx/conf.d ]; then
+		mkdir /etc/nginx/conf.d
+	fi
+	cat >/etc/nginx/conf.d/actgod.conf <<END
+client_max_body_size 20m;
+server_names_hash_bucket_size 64;
+END
+	sed -i s/'^worker_processes [0-9];'/'worker_processes 1;'/g /etc/nginx/nginx.conf
+	invoke-rc.d nginx restart
+	if [ ! -d /var/www ]; then
+		mkdir /var/www
+	fi
+	cat >/etc/nginx/proxy.conf <<EXND
+proxy_connect_timeout 30s;
+proxy_send_timeout   90;
+proxy_read_timeout   90;
+proxy_buffer_size    32k;
+proxy_buffers     4 32k;
+proxy_busy_buffers_size 64k;
+proxy_redirect     off;
+proxy_hide_header  Vary;
+proxy_set_header   Accept-Encoding '';
+proxy_set_header   Host   \$host;
+proxy_set_header   Referer \$http_referer;
+proxy_set_header   Cookie \$http_cookie;
+proxy_set_header   X-Real-IP  \$remote_addr;
+proxy_set_header   X-Forwarded-For \$proxy_add_x_forwarded_for;
+EXND
+	invoke-rc.d nginx restart
+}
+
+########################################################################
+# START OF PROGRAM
+########################################################################
+export PATH=/bin:/usr/bin:/sbin:/usr/sbin
+
+function tyinstall() {
+	check_sanity
+	case "$1" in
+	exim4)
+		install_exim4
+		;;
+	mysql)
+		install_mysql
+		;;
+	nginx)
+		install_nginx
+		;;
+	php)
+		install_php
+		;;
+	system)
+		check_version
+		remove_unneeded
+		update_stable
+		install_dash
+		install_syslogd
+		install_dropbear
+		;;
+	typecho)
+		install_typecho $2
+		;;
+	dhost)
+		install_dhost $2
+		;;
+	vhost)
+		install_vhost $2
+		;;
+	wordpress)
+		install_wordpress_en $2
+		;;
+	carbon)
+		install_carbonforum $2
+		;;
+	rainloop)
+		install_rainloop $2
+		;;
+	stable)
+		check_version
+		remove_unneeded
+		update_stable
+		install_dash
+		install_syslogd
+		install_sshd
+		install_exim4
+		install_mysql
+		install_nginx
+		install_php
+		;;
+	updatenginx)
+		update_nginx
+		;;
+	phpmyadmin)
+		install_phpmyadmin $2
+		;;
+	sshport)
+		sed -i '/^Port [0-9]*/d' /etc/ssh/sshd_config
+		sed -i '$a\Port Tianyitemp' /etc/ssh/sshd_config
+		sed -i s/Tianyitemp/$2/g /etc/ssh/sshd_config
+		echo "Port change successfully! The current port is $2"
+		invoke-rc.d nginx restart
+		;;
+	addnginx)
+		sed -i s/'^worker_processes [0-9];'/'worker_processes Tianyitemp;'/g /etc/nginx/nginx.conf
+		sed -i s/Tianyitemp/$2/g /etc/nginx/nginx.conf
+		invoke-rc.d nginx restart
+		;;
+	ssh)
+		cat >>/etc/shells <<END
+/sbin/nologin
+END
+		useradd $2 -s /sbin/nologin
+		echo $2:$3 | chpasswd
+		;;
+	*)
+		echo 'Usage:' $(basename $0) '[option]'
+		echo 'Available option:'
+		for option in system exim4 mysql nginx php wordpress carbon rainloop ssh addnginx stable dhost vhost sshport phpmyadmin; do
+			echo '  -' $option
+		done
+		;;
+	esac
+}
+
+tyinstall $1 $2 $3 | tee -a /tmp/tylemp.log
+
+
